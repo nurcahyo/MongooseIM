@@ -1512,6 +1512,7 @@ admin_member_list_allowed(Config) ->
         %% Kate can't get member list
         check_memberlist(Kate, no, Config),
         %% setup room - allow getmemberlist for moderator
+        escalus:send_and_wait(Alice, stanza_configuration_form_request(?config(room, Config))),
         Form = stanza_configuration_form(?config(room, Config), [
             {<<"muc#roomconfig_getmemberlist">>, [<<"moderator">>], <<"list-multi">>}]),
         escalus:send(Alice, Form),
@@ -1532,6 +1533,7 @@ admin_member_list_allowed(Config) ->
         %% Kate - no
         check_rolelist(Bob, yes, Config),
         %% setup room - allow getmemberlist for participant
+        escalus:send_and_wait(Alice, stanza_configuration_form_request(?config(room, Config))),
         Form1 = stanza_configuration_form(?config(room, Config), [
             {<<"muc#roomconfig_getmemberlist">>, [<<"participant">>], <<"list-multi">>}]),
         escalus:send(Alice, Form1),
@@ -1564,6 +1566,7 @@ admin_member_list_allowed(Config) ->
         %% Kate - no
         check_rolelist(Kate, no, Config),
         %% setup room - allow getmemberlist for visitor
+        escalus:send_and_wait(Alice, stanza_configuration_form_request(?config(room, Config))),
         Form2 = stanza_configuration_form(?config(room, Config), [
             {<<"muc#roomconfig_getmemberlist">>, [<<"visitor">>], <<"list-multi">>}]),
         escalus:send(Alice, Form2),
@@ -3510,7 +3513,7 @@ room_cant_be_reconfigured_before_form_is_fetched(Config) ->
         InstantRoomIqResp = escalus:send_and_wait(Alice, InstantRoomIq),
         escalus:assert(is_iq_result, [InstantRoomIq], InstantRoomIqResp),
         RoomsIqResp = escalus:send_and_wait(Alice, stanza_room_list_request(<<"id">>, undefined)),
-        has_room(RoomsIqResp, room_address(Room)),
+        has_room(room_address(Room), RoomsIqResp),
 
         FormIq = stanza_configuration_form(
                      Room, [{<<"muc#roomconfig_persistentroom">>, <<"1">>, <<"boolean">>}]),
@@ -4368,6 +4371,7 @@ given_fresh_room_for_user(Owner, RoomName, Opts) ->
 maybe_configure(_, _, []) ->
     ok;
 maybe_configure(Owner, RoomName, Opts) ->
+    escalus:send_and_wait(Owner, stanza_configuration_form_request(RoomName)),
     Cfg = [opt_to_room_config(Opt) || Opt <- Opts],
     Form = stanza_configuration_form(RoomName, lists:flatten(Cfg)),
     escalus:send(Owner, Form),

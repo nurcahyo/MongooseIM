@@ -266,6 +266,7 @@ init([Host, ServerHost, Access, Room, HistorySize, RoomShaper, HttpAuthPool,
                                    history = lqueue_new(HistorySize),
                                    jid = jid:make(Room, Host, <<>>),
                                    just_created = true,
+                                   configuration_initiated = false,
                                    room_shaper = Shaper,
                                    http_auth_pool = HttpAuthPool,
                                    hibernate_timeout = read_hibernate_timeout(ServerHost)
@@ -367,13 +368,13 @@ is_query_allowed(Query) ->
 locked_state_process_owner_iq(From, Query, Lang, set, StateData) ->
     Result = case is_query_allowed(Query) of
                  true ->
-                     process_iq_owner(From, set, Lang, Query, StateData);
+                     process_iq_owner(From, set, Lang, Query, StateData, locked_state);
                  false ->
                      {error, mongoose_xmpp_errors:item_not_found(Lang, <<"Query not allowed">>)}
              end,
     {Result, normal_state};
 locked_state_process_owner_iq(From, Query, Lang, get, StateData) ->
-    {process_iq_owner(From, get, Lang, Query, StateData), locked_state};
+    {process_iq_owner(From, get, Lang, Query, StateData, locked_state), locked_state};
 locked_state_process_owner_iq(_From, _Query, Lang, _Type, _StateData) ->
     {{error, mongoose_xmpp_errors:item_not_found(Lang, <<"Wrong type">>)}, locked_state}.
 
@@ -3211,32 +3212,45 @@ send_kickban_presence1(UJID, Reason, Code, Affiliation, StateData) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Owner stuff
 
--spec process_iq_owner(jid:jid(), get | set, ejabberd:lang(), exml:element(), state()) ->
+-spec process_iq_owner(jid:jid(), get | set, ejabberd:lang(), exml:element(),
+                       state(), statename()) ->
     {error, exml:element()} | {result, [exml:element() | jlib:xmlcdata()], state() | stop}.
-process_iq_owner(From, Type, Lang, SubEl, StateData) ->
+process_iq_owner(From, Type, Lang, SubEl, StateData, StateName) ->
     case get_affiliation(From, StateData) of
         owner ->
-            process_authorized_iq_owner(From, Type, Lang, SubEl, StateData);
+            process_authorized_iq_owner(From, Type, Lang, SubEl, StateData, StateName);
         _ ->
             ErrText = <<"Owner privileges required">>,
             {error, mongoose_xmpp_errors:forbidden(Lang, ErrText)}
     end.
 
--spec process_authorized_iq_owner(jid:jid(), get | set, ejabberd:lang(),
-                                  exml:element(), state()) ->
+-spec process_authorized_iq_owner(jid:jid(), get | set, ejabberd:lang(), exml:element(),
+                                  state(), statename()) ->
     {error, exml:element()} | {result, [exml:element() | jlib:xmlcdata()], state() | stop}.
-process_authorized_iq_owner(From, set, Lang, SubEl, StateData) ->
+process_authorized_iq_owner(From, set, Lang, SubEl, StateData, StateName) ->
     #xmlel{children = Els} = SubEl,
     case xml:remove_cdata(Els) of
         [#xmlel{name = <<"x">>} = XEl] ->
             case {xml:get_tag_attr_s(<<"xmlns">>, XEl),
-                  xml:get_tag_attr_s(<<"type">>, XEl)} of
-                {?NS_XDATA, <<"cancel">>} ->
+                  xml:get_tag_attr_s(<<"type">>, XEl),
+                  StateName,
+                  StateData#state.configuration_initiated} of
+                {?NS_XDATA, <<"cancel">>, locked_state, _} ->
+                    %% received cancel before the room was configured - destroy room
                     ?INFO_MSG("Destroyed MUC room ~s by the owner ~s : cancelled",
                               [jid:to_binary(StateData#state.jid), jid:to_binary(From)]),
                     add_to_log(room_existence, destroyed, StateData),
                     destroy_room(XEl, StateData);
-                {?NS_XDATA, <<"submit">>} ->
+                {?NS_XDATA, <<"cancel">>, normal_state, true} ->
+                    %% received cancel when room was configured - continue without changes
+                    {result, [], StateData};
+                {?NS_XDATA, <<"cancel">>, normal_state, false} ->
+                    %% received cancel while in normal state, but config form wasn't requested
+                    {error, mongoose_xmpp_errors:unexpected_request_modify()};
+                {?NS_XDATA, <<"submit">>, normal_state, false} ->
+                    %% received form submit while in normal state, but config form wasn't requested
+                    {error, mongoose_xmpp_errors:unexpected_request_modify()};
+                {?NS_XDATA, <<"submit">>, _, _} ->
                     process_authorized_submit_owner(From, XEl, StateData);
                 _ ->
                     {error, mongoose_xmpp_errors:bad_request()}
@@ -3249,7 +3263,7 @@ process_authorized_iq_owner(From, set, Lang, SubEl, StateData) ->
         Items ->
             process_admin_items_set(From, Items, Lang, StateData)
     end;
-process_authorized_iq_owner(From, get, Lang, SubEl, StateData) ->
+process_authorized_iq_owner(From, get, Lang, SubEl, StateData, _StateName) ->
     case exml_query:path(SubEl, [{element, <<"item">>}, {attr, <<"affiliation">>}]) of
         undefined ->
             get_config(Lang, StateData, From);
@@ -3269,14 +3283,16 @@ process_authorized_iq_owner(From, get, Lang, SubEl, StateData) ->
     {error, exml:element()} | {result, [exml:element() | jlib:xmlcdata()], state() | stop}.
 process_authorized_submit_owner(_From, #xmlel{ children = [] } = _XEl, StateData) ->
     %confrm an instant room
-    {result, [], StateData};
+    {result, [], StateData#state{configuration_initiated = false}};
+process_authorized_submit_owner(_From, _XEl, #state{configuration_initiated = false}) ->
+    {error, mongoose_xmpp_errors:unexpected_request_modify()};
 process_authorized_submit_owner(From, XEl, StateData) ->
     %attepmt to configure
     case is_allowed_log_change(XEl, StateData, From)
          andalso is_allowed_persistent_change(XEl, StateData, From)
          andalso is_allowed_room_name_desc_limits(XEl, StateData)
          andalso is_password_settings_correct(XEl, StateData) of
-        true -> set_config(XEl, StateData);
+        true -> set_config(XEl, StateData#state{configuration_initiated = false});
         false -> {error, mongoose_xmpp_errors:not_acceptable()}
     end.
 
@@ -3471,7 +3487,7 @@ get_config(Lang, StateData, From) ->
                      attrs = [{<<"xmlns">>, ?NS_XDATA},
                               {<<"type">>, <<"form">>}],
                      children = Res}],
-     StateData}.
+     StateData#state{configuration_initiated = true}}.
 
 -spec getmemberlist_field(Lang :: ejabberd:lang()) -> exml:element().
 getmemberlist_field(Lang) ->
@@ -4553,7 +4569,7 @@ route_iq(Acc, #routed_iq{iq = #iq{type = Type, xmlns = ?NS_MUC_ADMIN, lang = Lan
     do_route_iq(Acc, Res, Routed, StateData);
 route_iq(Acc, #routed_iq{iq = #iq{type = Type, xmlns = ?NS_MUC_OWNER, lang = Lang,
     sub_el = SubEl}, from = From} = Routed, StateData) ->
-    Res = process_iq_owner(From, Type, Lang, SubEl, StateData),
+    Res = process_iq_owner(From, Type, Lang, SubEl, StateData, normal_state),
     do_route_iq(Acc, Res, Routed, StateData);
 route_iq(Acc, #routed_iq{iq = #iq{type = Type, xmlns = ?NS_DISCO_INFO, lang = Lang},
     from = From} = Routed, StateData) ->

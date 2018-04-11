@@ -91,6 +91,9 @@ unexpected_request() ->
 unexpected_request_cancel() ->
     jlib:stanza_error(<<"401">>,<<"cancel">>,<<"unexpected-request">>).
 
+unexpected_request_modify() ->
+    jlib:stanza_error(<<"400">>,<<"modify">>,<<"unexpected-request">>).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Text Stanza Errors
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

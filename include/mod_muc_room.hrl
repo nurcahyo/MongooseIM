@@ -83,6 +83,7 @@
                 subject = <<>>,
                 subject_author = <<>>,
                 just_created = false     :: boolean(),
+                configuration_initiated = false :: boolean(),
                 activity = treap:empty() :: treap:treap(),
                 room_shaper              :: shaper:shaper(),
                 room_queue = queue:new(),
